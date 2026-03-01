@@ -433,7 +433,7 @@ fn get_simple_event(event: notify::Event) -> Option<FilesystemEvent> {
         },
         EventKind::Modify(modify_kind) => match modify_kind {
             ModifyKind::Any => {
-                if event.paths[0].extension() == Some(OsStr::new("new")) {
+                if event.paths[0].is_dir() || event.paths[0].extension() == Some(OsStr::new("new")) {
                     return None;
                 }
                 Some(FilesystemEvent::Change(event.paths[0].clone().into()))
