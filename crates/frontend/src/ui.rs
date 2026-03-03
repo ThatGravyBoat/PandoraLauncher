@@ -175,7 +175,15 @@ impl LauncherUI {
             default_sidebar_width = 150.0;
         }
 
-        let page = match Self::create_page(&data, config.main_page.clone(), window, cx) {
+        let main_page = config.main_page.clone();
+
+        // If main_page failed to deserialize, also reset the path
+        if main_page == PageType::Instances {
+            let config = InterfaceConfig::get_mut(cx);
+            config.page_path = [].into();
+        }
+
+        let page = match Self::create_page(&data, main_page.clone(), window, cx) {
             Ok(page) => page,
             Err(page_type) => {
                 let config = InterfaceConfig::get_mut(cx);
