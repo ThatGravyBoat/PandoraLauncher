@@ -623,7 +623,7 @@ impl ModrinthSearchPage {
                                     .children(std::iter::once(environment).chain(categories)),
                             ),
                     )
-                    .child(v_flex().gap_2().child(downloads).child(install_button));
+                    .child(v_flex().items_end().child(downloads).child(install_button));
 
                 div().pl_3().pt_3().child(item)
             })
