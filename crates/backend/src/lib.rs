@@ -1,7 +1,7 @@
 #![deny(unused_must_use)]
 
 mod backend;
-use std::{ffi::OsString, io::Write, path::{Path, PathBuf}, sync::Arc};
+use std::{ffi::{OsStr, OsString}, io::Write, path::{Path, PathBuf}, sync::Arc};
 
 pub use backend::*;
 use bridge::instance::InstanceContentSummary;
@@ -249,4 +249,61 @@ pub fn join_windows_shell(args: &[&str]) -> String {
     }
 
     string
+}
+
+pub fn join_windows_shell_os(args: &[&OsStr]) -> OsString {
+    let mut string = Vec::new();
+
+    let mut first = true;
+    for arg in args {
+        let mut backslashes = 0;
+
+        if first {
+            first = false;
+        } else {
+            string.push(b' ');
+        }
+
+        let arg_raw = arg.as_encoded_bytes();
+        let quoted = arg_raw.contains(&b' ') || arg_raw.contains(&b'\t');
+        if quoted {
+            string.push(b'"');
+        }
+
+        for byte in arg_raw {
+            if *byte == b'\\' {
+                backslashes += 1;
+            } else if *byte == b'"' {
+                for _ in 0..backslashes*2 {
+                    string.push(b'\\');
+                }
+                string.push(b'\\');
+                string.push(b'"');
+                backslashes = 0;
+            } else {
+                for _ in 0..backslashes {
+                    string.push(b'\\');
+                }
+                string.push(*byte);
+            }
+        }
+
+        if quoted {
+            for _ in 0..backslashes*2 {
+                string.push(b'\\');
+            }
+        } else {
+            for _ in 0..backslashes {
+                string.push(b'\\');
+            }
+        }
+
+        if quoted {
+            string.push(b'"');
+        }
+    }
+
+    unsafe {
+        OsString::from_encoded_bytes_unchecked(string)
+    }
 }
