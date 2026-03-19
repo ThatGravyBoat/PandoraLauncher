@@ -7,9 +7,11 @@ use bridge::instance::InstanceID;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
+use rc_zip_sync::ReadZip;
 use rustc_hash::{FxHashMap, FxHashSet};
 use schema::server_status::ServerStatus;
 use tokio::net::TcpStream;
+use ustr::Ustr;
 use std::io::{Cursor, Error, ErrorKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -17,13 +19,13 @@ use crate::BackendState;
 
 const MINECRAFT_PORT: u16 = 25565;
 const TIMEOUT: Duration = Duration::from_secs(5);
+const FALLBACK_PROTOCOL_VERSION: i32 = 774;
 
 pub struct ServerListPinger {
-    data: Arc<RwLock<FxHashMap<Arc<str>, PingEntry>>>,
+    data: Arc<RwLock<FxHashMap<(Arc<str>, i32), PingEntry>>>,
     start: Instant,
     resolver: OnceCell<Option<Box<hickory_resolver::Resolver<TokioConnectionProvider>>>>,
-    // libraries_folder: Arc<Path>,
-    // cached_data_versions: Arc<RwLock<FxHashMap<Arc<str>, usize>>>,
+    protocol_versions: Arc<RwLock<FxHashMap<Ustr, i32>>>,
 }
 
 enum PingEntry {
@@ -52,13 +54,47 @@ impl ServerListPinger {
             data: Default::default(),
             start: Instant::now(),
             resolver: OnceCell::new(),
+            protocol_versions: Default::default(),
         }
     }
 
-    pub fn load_status(backend: &Arc<BackendState>, server: Arc<str>, instance: InstanceID) -> PingResult {
+    fn load_minecraft_data_version(file: std::fs::File) -> Option<i32> {
+        let archive = file.read_zip().ok()?;
+        let version_json = archive.by_name("version.json")?;
+        let bytes = version_json.bytes().ok()?;
+
+        let Ok(serde_json::Value::Object(json)) = serde_json::from_slice(&bytes) else {
+            return None
+        };
+
+        let protocol_version = json.get("protocol_version")?;
+        protocol_version.as_i64().map(|v| v as i32)
+    }
+
+    pub fn load_status(backend: &Arc<BackendState>, server: Arc<str>, version: Ustr, instance: InstanceID) -> PingResult {
+        let protocol_version = {
+            let mut protocol_versions = backend.server_list_pinger.protocol_versions.upgradable_read();
+            let mut protocol_version = protocol_versions.get(&version).copied();
+
+            if protocol_version.is_none() {
+                let minecraft_jar_pathname = format!("net/minecraft/{0}/minecraft-client-{0}.jar", version);
+                let minecraft_jar_path = backend.directories.libraries_dir.join(minecraft_jar_pathname);
+                if let Ok(minecraft_jar) = std::fs::File::open(minecraft_jar_path) {
+                    let protocol_version_number = Self::load_minecraft_data_version(minecraft_jar).unwrap_or(FALLBACK_PROTOCOL_VERSION);
+                    protocol_versions.with_upgraded(|upgraded| {
+                        upgraded.insert(version, protocol_version_number);
+                    });
+                    protocol_version = Some(protocol_version_number);
+                }
+            }
+
+            protocol_version.unwrap_or(FALLBACK_PROTOCOL_VERSION)
+        };
+
+        let key = (server.clone(), protocol_version);
         {
             let mut data = backend.server_list_pinger.data.write();
-            if let Some(existing) = data.get_mut(&server) {
+            if let Some(existing) = data.get_mut(&key) {
                 match existing {
                     PingEntry::Loading { instances } => {
                         instances.insert(instance);
@@ -74,14 +110,14 @@ impl ServerListPinger {
             }
             let mut instances = FxHashSet::default();
             instances.insert(instance);
-            data.insert(server.clone(), PingEntry::Loading { instances });
+            data.insert(key.clone(), PingEntry::Loading { instances });
         }
 
         let backend = backend.clone();
         tokio::spawn(async move {
             let (host, port) = if let Some((host, port)) = server.split_once(':') {
                 let Ok(port) = port.parse::<u16>() else {
-                    backend.server_list_pinger.data.write().insert(server.clone(), PingEntry::Failed);
+                    backend.server_list_pinger.data.write().insert(key.clone(), PingEntry::Failed);
                     return;
                 };
                 (host, Some(port))
@@ -90,12 +126,12 @@ impl ServerListPinger {
             };
             let status = backend.server_list_pinger.request_status(host, port, 774).await;
             let Ok((status, ping)) = status else {
-                backend.server_list_pinger.data.write().insert(server.clone(), PingEntry::Failed);
+                backend.server_list_pinger.data.write().insert(key.clone(), PingEntry::Failed);
                 return;
             };
 
             let entry = PingEntry::Loaded { status: Arc::new(status), ping };
-            let old_status = backend.server_list_pinger.data.write().insert(server.clone(), entry);
+            let old_status = backend.server_list_pinger.data.write().insert(key.clone(), entry);
 
             if let Some(PingEntry::Loading { instances }) = old_status {
                 let mut instance_state = backend.instance_state.write();

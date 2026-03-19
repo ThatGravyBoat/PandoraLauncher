@@ -413,8 +413,9 @@ impl Instance {
                     let server_dat_path = this.server_dat_path.clone();
                     let backend = backend.clone();
                     let instance_id = this.id;
+                    let version = this.configuration.get().minecraft_version;
                     tokio::task::spawn_blocking(move || {
-                        Self::load_servers_all(&server_dat_path, &backend, instance_id)
+                        Self::load_servers_all(&server_dat_path, &backend, version, instance_id)
                     })
                 };
 
@@ -450,14 +451,14 @@ impl Instance {
         }.boxed()
     }
 
-    fn load_servers_all(server_dat_path: &Path, backend: &Arc<BackendState>, instance: InstanceID) -> Arc<[InstanceServerSummary]> {
+    fn load_servers_all(server_dat_path: &Path, backend: &Arc<BackendState>, version: Ustr, instance: InstanceID) -> Arc<[InstanceServerSummary]> {
         log::info!("Loading servers from {:?}", server_dat_path);
 
         if !server_dat_path.is_file() {
             return Arc::from([]);
         }
 
-        let result = match load_servers_summary(&server_dat_path, backend, instance) {
+        let result = match load_servers_summary(&server_dat_path, backend, version, instance) {
             Ok(summaries) => summaries.into(),
             Err(err) => {
                 log::error!("Error loading servers: {:?}", err);
@@ -1074,7 +1075,7 @@ fn load_world_summary(path: &Path) -> anyhow::Result<InstanceWorldSummary> {
     })
 }
 
-fn load_servers_summary(server_dat_path: &Path, backend: &Arc<BackendState>, instance: InstanceID) -> anyhow::Result<Vec<InstanceServerSummary>> {
+fn load_servers_summary(server_dat_path: &Path, backend: &Arc<BackendState>, version: Ustr, instance: InstanceID) -> anyhow::Result<Vec<InstanceServerSummary>> {
     let raw = std::fs::read(server_dat_path)?;
 
     let mut nbt_data = raw.as_slice();
@@ -1099,7 +1100,7 @@ fn load_servers_summary(server_dat_path: &Path, backend: &Arc<BackendState>, ins
         };
 
         let ip: Arc<str> = ip.as_str().into();
-        let result = ServerListPinger::load_status(backend, ip.clone(), instance);
+        let result = ServerListPinger::load_status(backend, ip.clone(), version, instance);
         let (pinging, status, ping) = match result {
             PingResult::Pinging => (true, None, None),
             PingResult::Loaded { status, ping } => (false, Some(status), ping),
