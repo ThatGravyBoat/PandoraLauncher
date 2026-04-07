@@ -1,10 +1,10 @@
 use std::{ffi::{OsStr, OsString}, io::{Error, ErrorKind}, os::fd::{AsRawFd, FromRawFd, RawFd}, path::{Path, PathBuf}};
 
 use libseccomp::{ScmpAction, ScmpArgCompare, ScmpCompareOp, ScmpFilterContext, ScmpSyscall};
-use once_cell::sync::{Lazy, OnceCell};
+use once_cell::sync::Lazy;
 use rustc_hash::FxHashSet;
 
-use crate::{PandoraArg, PandoraChild, PandoraCommand, PandoraSandbox, unix::unix_helpers::cvt};
+use crate::{PandoraArg, PandoraChild, PandoraCommand, PandoraSandbox, spawner::SpawnContext, unix::unix_helpers::cvt};
 
 const DEV_BINDS: &[&str] = &[
     // Graphics
@@ -179,7 +179,7 @@ fn get_card_names() -> Vec<OsString> {
     card_names
 }
 
-pub fn spawn(mut command: PandoraCommand, sandbox: PandoraSandbox) -> std::io::Result<PandoraChild> {
+pub fn spawn(mut command: PandoraCommand, sandbox: PandoraSandbox, context: &mut SpawnContext) -> std::io::Result<PandoraChild> {
     let resolved_executable = if command.executable.0.as_encoded_bytes().contains(&b'/') {
         let path = Path::new(&command.executable.0);
         let Ok(path) = path.canonicalize() else {
@@ -362,13 +362,17 @@ pub fn spawn(mut command: PandoraCommand, sandbox: PandoraSandbox) -> std::io::R
     builder.push_os_string(format!("{}", seccomp_fd.as_raw_fd()).into());
     command.pass_fds.push(seccomp_fd);
 
-    let dbus_proxy = DBUS_PROXY.get_or_try_init(|| {
-        start_dbus_proxy(&sandbox.sandbox_dir)
-    })?;
+    let dbus_proxy = if let Some(dbus_proxy) = &context.dbus_proxy {
+        dbus_proxy
+    } else {
+        let dbus_proxy = start_dbus_proxy(&sandbox.sandbox_dir, context)?;
+        context.dbus_proxy = Some(dbus_proxy);
+        context.dbus_proxy.as_ref().unwrap()
+    };
 
-    if let Some(dbus_proxy) = dbus_proxy {
+    if let Some(session_bus_proxy) = &dbus_proxy.session_bus_proxy {
         builder.push_str("--bind");
-        builder.push_os_string(dbus_proxy.session_bus_proxy.clone().into_os_string());
+        builder.push_os_string(session_bus_proxy.clone().into_os_string());
         let runtime_dir = directories.runtime_dir().unwrap_or(Path::new("/run/user/1000"));
         let mapped_bus_dir = runtime_dir.join("bus").into_os_string();
         builder.push_os_string(mapped_bus_dir.clone());
@@ -385,18 +389,18 @@ pub fn spawn(mut command: PandoraCommand, sandbox: PandoraSandbox) -> std::io::R
     }
 
     command.args.splice(0..0, builder.command);
-    crate::unix::unix_spawn::spawn(command)
+    crate::unix::unix_spawn::spawn(command, context)
 }
 
-static DBUS_PROXY: OnceCell<Option<DbusProxy>> = OnceCell::new();
-
-struct DbusProxy {
-    session_bus_proxy: PathBuf,
+pub struct DbusProxy {
+    session_bus_proxy: Option<PathBuf>,
 }
 
-fn start_dbus_proxy(sandbox_dir: &Path) -> std::io::Result<Option<DbusProxy>> {
+fn start_dbus_proxy(sandbox_dir: &Path, context: &mut SpawnContext) -> std::io::Result<DbusProxy> {
     let Some(session_bus_address) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") else {
-        return Ok(None);
+        return Ok(DbusProxy {
+            session_bus_proxy: None,
+        });
     };
     let Some(proxy_executable) = crate::path_cache::get_command_path(OsStr::new("xdg-dbus-proxy")) else {
         return Err(Error::new(ErrorKind::NotFound, "unable to find 'xdg-dbus-proxy'"))
@@ -420,11 +424,11 @@ fn start_dbus_proxy(sandbox_dir: &Path) -> std::io::Result<Option<DbusProxy>> {
     command.arg("--talk=org.freedesktop.portal.*");
     command.arg("--talk=org.mpris.MediaPlayer2.*");
 
-    _ = command.spawn()?;
+    _ = crate::unix::unix_spawn::spawn(command, context)?;
 
-    Ok(Some(DbusProxy {
-        session_bus_proxy,
-    }))
+    Ok(DbusProxy {
+        session_bus_proxy: Some(session_bus_proxy),
+    })
 }
 
 // Syscall allowlist copied from https://github.com/moby/profiles/blob/fa50b7287199d1c781284d1a34d1395a62e57f1e/seccomp/default.json

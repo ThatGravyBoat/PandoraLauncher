@@ -1,8 +1,8 @@
 use std::{ffi::OsStr, io::Error};
 
-use crate::{PandoraChild, PandoraCommand, process::PandoraProcess};
+use crate::{PandoraChild, PandoraCommand, spawner::SpawnContext};
 
-pub fn spawn(mut cmd: PandoraCommand) -> std::io::Result<PandoraChild> {
+pub fn spawn(mut cmd: PandoraCommand, context: &mut SpawnContext) -> std::io::Result<PandoraChild> {
     let Some(pkexec) = crate::path_cache::get_command_path(OsStr::new("pkexec")) else {
         return Err(Error::new(std::io::ErrorKind::NotFound, "cannot find 'pkexec'"));
     };
@@ -20,5 +20,5 @@ pub fn spawn(mut cmd: PandoraCommand) -> std::io::Result<PandoraChild> {
     cmd.args.insert(0, "--disable-internal-agent".into());
     cmd.args.insert(1, "--keep-cwd".into());
     cmd.args.insert(2, executable);
-    crate::unix::unix_spawn::spawn(cmd)
+    crate::unix::unix_spawn::spawn(cmd, context)
 }

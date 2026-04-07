@@ -29,6 +29,8 @@ pub struct SpawnContext {
     pub null_device: Option<std::os::windows::io::OwnedHandle>,
     #[cfg(unix)]
     pub dev_null_fd: Option<libc::c_int>,
+    #[cfg(target_os = "linux")]
+    pub dbus_proxy: Option<crate::unix::linux::bwrap::DbusProxy>,
 }
 
 #[cfg(windows)]
@@ -89,7 +91,7 @@ fn handle_spawn(mut command: PandoraCommand, spawn_type: SpawnType, context: &mu
             }
 
             #[cfg(target_os = "linux")]
-            return crate::unix::linux::pkexec::spawn(command);
+            return crate::unix::linux::pkexec::spawn(command, context);
             #[cfg(windows)]
             return crate::windows::runas::spawn(command, context);
             #[cfg(target_os = "macos")]
@@ -97,7 +99,7 @@ fn handle_spawn(mut command: PandoraCommand, spawn_type: SpawnType, context: &mu
         },
         SpawnType::Sandboxed(sandbox) => {
             #[cfg(target_os = "linux")]
-            return crate::unix::linux::bwrap::spawn(command, sandbox);
+            return crate::unix::linux::bwrap::spawn(command, sandbox, context);
 
             #[cfg(windows)]
             {
