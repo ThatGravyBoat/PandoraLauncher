@@ -8,7 +8,7 @@ use gpui_component::{
 ;
 use once_cell::sync::Lazy;
 use rustc_hash::FxHashMap;
-use schema::minecraft_profile::{SkinState, SkinVariant};
+use schema::{minecraft_profile::{SkinState, SkinVariant}, unique_bytes::UniqueBytes};
 use uuid::Uuid;
 use crate::{
     component::{player_model_widget::PlayerModelWidget, shrinking_text::ShrinkingText}, data_asset_loader::DataAssetLoader, entity::{DataEntities, account::AccountExt}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::page::Page, png_render_cache::ImageTransformation, skin_thumbnail_cache::SkinThumbnailCache, skin_renderer::determine_skin_variant, ts
@@ -20,7 +20,7 @@ pub struct SkinsPage {
     pending_login: Option<ModalAction>,
     applying_to_account: Option<Uuid>,
     request_account_skin: Option<Task<()>>,
-    selected_skin: Arc<[u8]>,
+    selected_skin: UniqueBytes,
     selected_cape: Option<(Uuid, Arc<str>)>,
     active_cape: Option<(Uuid, Arc<str>)>,
     pending_apply_cape: bool,
@@ -34,7 +34,7 @@ pub struct SkinsPage {
     skin_thumbnail_cache: Entity<SkinThumbnailCache>,
 }
 
-static DEFAULT_SKIN: Lazy<Arc<[u8]>> = Lazy::new(|| Arc::from(*include_bytes!("../../../../assets/images/default_skin.png")));
+static DEFAULT_SKIN: Lazy<UniqueBytes> = Lazy::new(|| UniqueBytes::new(include_bytes!("../../../../assets/images/default_skin.png")));
 
 impl SkinsPage {
     pub fn new(data: &DataEntities, window: &mut Window, cx: &mut App) -> Self {
@@ -66,7 +66,7 @@ impl SkinsPage {
         !self.has_pending_login()
     }
 
-    fn select_skin(&mut self, skin: Arc<[u8]>, variant: SkinVariant, cx: &mut Context<Self>) {
+    fn select_skin(&mut self, skin: UniqueBytes, variant: SkinVariant, cx: &mut Context<Self>) {
         self.selected_skin = skin.clone();
         self.player_model_widget.update(cx, |widget, cx| {
             widget.set_skin(cx, skin, variant);
@@ -230,7 +230,7 @@ impl Render for SkinsPage {
                         active_skin_variant = Some(*variant);
                         let selected_variant = self.player_model_widget.read(cx).get_variant();
                         let can_apply_changes = if let Some(skin) = skin {
-                            !Arc::ptr_eq(skin, &self.selected_skin)
+                            *skin != self.selected_skin
                                 || *variant != selected_variant
                                 || self.active_cape != self.selected_cape
                         } else {
@@ -265,7 +265,7 @@ impl Render for SkinsPage {
                                 .on_click({
                                     let skin = skin.clone();
                                     cx.listener(move |page, _, _, cx| {
-                                        if let Some(skin) = &skin && !Arc::ptr_eq(&skin, &page.selected_skin) {
+                                        if let Some(skin) = &skin && skin != &page.selected_skin {
                                             page.data.backend_handle.send(MessageToBackend::SetAccountSkin {
                                                 account: uuid,
                                                 skin: page.selected_skin.clone(),
@@ -550,9 +550,9 @@ impl Render for SkinsPage {
                         InterfaceConfig::get_mut(cx).skin_list_show_3d ^= true;
                     }))))
             .child(h_flex().w_full().gap_2().flex_wrap().children(skins.filter_map(|(i, skin)| {
-                let selected = Arc::ptr_eq(&self.selected_skin, skin);
+                let selected = &self.selected_skin == skin;
                 let active = if let Some(active_skin) = &active_skin {
-                    Arc::ptr_eq(active_skin, skin)
+                    active_skin == skin
                 } else {
                     false
                 };
@@ -630,7 +630,6 @@ impl Render for SkinsPage {
                             .bottom(padding)
                             .on_click({
                                 let skin = skin.clone();
-                                let skin: Arc<[u8]> = skin.into();
                                 let active_skin = active_skin.clone();
                                 cx.listener(move |page, _, window, cx| {
                                     page.data.backend_handle.send(MessageToBackend::RemoveFromSkinLibrary {
@@ -638,7 +637,7 @@ impl Render for SkinsPage {
                                     });
                                     cx.stop_propagation();
                                     window.prevent_default();
-                                    if Arc::ptr_eq(&skin, &page.selected_skin) {
+                                    if skin == page.selected_skin {
                                         if let Some(active_skin) = active_skin.clone() {
                                             let variant = if let Some(active_skin_variant) = active_skin_variant {
                                                 active_skin_variant

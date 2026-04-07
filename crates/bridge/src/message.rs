@@ -6,7 +6,7 @@ use schema::{
     backend_config::{BackendConfig, ProxyConfig}, instance::{
         InstanceConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration,
         InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration,
-    }, loader::Loader, minecraft_profile::{MinecraftProfileCape, SkinVariant}, pandora_update::UpdatePrompt
+    }, loader::Loader, minecraft_profile::{MinecraftProfileCape, SkinVariant}, pandora_update::UpdatePrompt, unique_bytes::UniqueBytes
 };
 use ustr::Ustr;
 use uuid::Uuid;
@@ -15,7 +15,7 @@ use crate::{
     account::Account, game_output::GameOutputLogLevel, import::{ImportFromOtherLauncherJob, OtherLauncher}, install::ContentInstall, instance::{
         InstanceContentID, InstanceContentSummary, InstanceID, InstancePlaytime, InstanceServerSummary, InstanceStatus,
         InstanceWorldSummary,
-    }, keep_alive::{KeepAlive, KeepAliveHandle}, meta::{MetadataRequest, MetadataResult}, modal_action::ModalAction
+    }, keep_alive::{KeepAlive, KeepAliveHandle}, meta::{MetadataRequest, MetadataResult}, modal_action::ModalAction,
 };
 
 #[derive(Debug)]
@@ -227,7 +227,7 @@ pub enum MessageToBackend {
     },
     SetAccountSkin {
         account: Uuid,
-        skin: Arc<[u8]>,
+        skin: UniqueBytes,
         variant: SkinVariant,
     },
     GetAccountCapes {
@@ -240,7 +240,7 @@ pub enum MessageToBackend {
     },
     RequestSkinLibrary,
     RemoveFromSkinLibrary{
-        skin: Arc<[u8]>,
+        skin: UniqueBytes,
     },
     AddToSkinLibrary {
         source: UrlOrFile,
@@ -259,7 +259,7 @@ pub enum MessageToFrontend {
     InstanceAdded {
         id: InstanceID,
         name: Ustr,
-        icon: Option<Arc<[u8]>>,
+        icon: Option<UniqueBytes>,
         root_path: Arc<Path>,
         dot_minecraft_folder: Arc<Path>,
         configuration: InstanceConfiguration,
@@ -275,7 +275,7 @@ pub enum MessageToFrontend {
     InstanceModified {
         id: InstanceID,
         name: Ustr,
-        icon: Option<Arc<[u8]>>,
+        icon: Option<UniqueBytes>,
         root_path: Arc<Path>,
         dot_minecraft_folder: Arc<Path>,
         configuration: InstanceConfiguration,
@@ -419,14 +419,13 @@ pub enum QuickPlayLaunch {
 #[derive(Debug, Clone)]
 pub enum EmbeddedOrRaw {
     Embedded(Arc<str>),
-    Raw(Arc<[u8]>),
+    Raw(UniqueBytes),
 }
-
 
 #[derive(Debug, Clone)]
 pub enum AccountSkinResult {
     Success {
-        skin: Option<Arc<[u8]>>,
+        skin: Option<UniqueBytes>,
         variant: SkinVariant,
     },
     NeedsLogin,
@@ -444,7 +443,7 @@ pub enum AccountCapesResult {
 #[derive(Clone, Debug)]
 pub struct SkinLibrary {
     pub state: BridgeDataLoadState,
-    pub skins: Arc<[Arc<[u8]>]>,
+    pub skins: Arc<[UniqueBytes]>,
     pub folder: Arc<Path>
 }
 

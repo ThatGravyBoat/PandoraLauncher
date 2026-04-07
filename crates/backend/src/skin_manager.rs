@@ -1,23 +1,23 @@
-use std::{collections::HashMap, io::Cursor, path::{Path, PathBuf}, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, io::Cursor, path::Path, sync::Arc, time::SystemTime};
 
-use bridge::message::{AccountSkinResult, BridgeDataLoadState, MessageToFrontend, SkinLibrary};
-use image::DynamicImage;
+use bridge::{message::{AccountSkinResult, BridgeDataLoadState, MessageToFrontend, SkinLibrary}};
+use image::{DynamicImage, RgbaImage};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
-use schema::minecraft_profile::SkinVariant;
+use schema::{minecraft_profile::SkinVariant, unique_bytes::UniqueBytes};
 use tokio::sync::oneshot::Sender;
 use uuid::Uuid;
 
 use crate::{BackendState, FolderChanges};
 
 pub struct SkinManager {
-    skin_cache: HashMap<Arc<[u8]>, Arc<[u8]>>,
+    skin_cache: HashMap<RgbaImage, UniqueBytes>,
     skins_download: FxHashMap<Arc<str>, SkinEntry>,
     pub skin_library_state: BridgeDataLoadState,
-    skin_library_last: Vec<(SystemTime, Arc<Path>, Arc<[u8]>)>,
-    skin_library: Arc<[Arc<[u8]>]>,
+    skin_library_last: Vec<(SystemTime, Arc<Path>, UniqueBytes)>,
+    skin_library: Arc<[UniqueBytes]>,
     skin_library_changes: FolderChanges,
-    skin_path_map: HashMap<Arc<[u8]>, Arc<Path>>
+    skin_path_map: HashMap<UniqueBytes, Arc<Path>>
 }
 
 impl Default for SkinManager {
@@ -40,24 +40,24 @@ enum SkinEntry {
         frontend_requests: Vec<(SkinVariant, Sender<AccountSkinResult>)>,
     },
     Loaded {
-        skin: Arc<[u8]>,
-        head: Arc<[u8]>,
+        skin: UniqueBytes,
+        head: UniqueBytes,
     },
     Failed,
 }
 
 impl SkinManager {
-    fn create_skin(&mut self, image: &DynamicImage, bytes: &[u8]) -> Arc<[u8]> {
-        if let Some(cached) = self.skin_cache.get(image.as_bytes()) {
+    fn create_skin(&mut self, image: RgbaImage, bytes: &[u8]) -> UniqueBytes {
+        if let Some(cached) = self.skin_cache.get(&image) {
             cached.clone()
         } else {
-            let skin: Arc<[u8]> = Arc::from(bytes);
-            self.skin_cache.insert(image.as_bytes().into(), skin.clone());
+            let skin = UniqueBytes::new(bytes);
+            self.skin_cache.insert(image.clone(), skin.clone());
             skin
         }
     }
 
-    pub fn remove_skin(backend: &BackendState, image_bytes: Arc<[u8]>) {
+    pub fn remove_skin(backend: &BackendState, image_bytes: UniqueBytes) {
         let skin_manager = backend.skin_manager.write();
         let Some(skin_path) = skin_manager.skin_path_map.get(&image_bytes) else {
             log::warn!("Unable to find skin for deletion");
@@ -196,8 +196,8 @@ impl SkinManager {
             }
 
             let mut skin_manager_guard = skin_manager.write();
-            let head_png: Arc<[u8]> = Arc::from(head_bytes);
-            let skin = skin_manager_guard.create_skin(&image, &*bytes);
+            let head_png = UniqueBytes::new(&head_bytes);
+            let skin = skin_manager_guard.create_skin(image.into_rgba8(), &*bytes);
 
             let previous = skin_manager_guard.skins_download.insert(skin_url.clone(), SkinEntry::Loaded {
                 skin: skin.clone(),
@@ -316,7 +316,7 @@ impl SkinManager {
 
                     let path: Arc<Path> = path.into();
 
-                    
+
                     skins.push((time, path, image, bytes));
                 }
 
@@ -324,7 +324,7 @@ impl SkinManager {
 
                 let mut skin_manager = backend.skin_manager.write();
                 let skins = skins.into_iter().map(|(time, path, image, bytes)| {
-                    (time, path, skin_manager.create_skin(&image, &bytes))
+                    (time, path, skin_manager.create_skin(image.to_rgba8(), &bytes))
                 }).collect::<Vec<_>>();
                 skin_manager.skin_library = skins.iter().map(|(_, _, bytes)| bytes.clone()).collect();
                 skin_manager.skin_path_map = skins.iter().map(|(_, path, bytes)| (bytes.clone(), path.clone())).collect();
@@ -371,7 +371,7 @@ impl SkinManager {
                 let mut skin_manager = backend.skin_manager.write();
 
                 let mut skins = skins.into_iter().map(|(time, path, image, bytes)| {
-                    (time, path, skin_manager.create_skin(&image, &bytes))
+                    (time, path, skin_manager.create_skin(image.to_rgba8(), &bytes))
                 }).collect::<Vec<_>>();
 
                 for existing in std::mem::take(&mut skin_manager.skin_library_last) {

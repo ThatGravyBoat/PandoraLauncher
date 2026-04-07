@@ -7,13 +7,13 @@ use base64::Engine;
 use bridge::{
     instance::{
         ContentSummary, ContentUpdateContext, ContentUpdateStatus, InstanceContentID, InstanceContentSummary, InstanceID, InstancePlaytime, InstanceServerSummary, InstanceStatus, InstanceWorldSummary
-    }, keep_alive::KeepAliveHandle, message::{BridgeDataLoadState, MessageToFrontend}, notify_signal::{KeepAliveNotifySignal, KeepAliveNotifySignalHandle}
+    }, keep_alive::KeepAliveHandle, message::{BridgeDataLoadState, MessageToFrontend}, notify_signal::{KeepAliveNotifySignal, KeepAliveNotifySignalHandle},
 };
 use command::PandoraProcess;
 use futures::FutureExt;
 use relative_path::RelativePath;
 use rustc_hash::FxHashSet;
-use schema::{auxiliary::{AuxDisabledChildren, AuxiliaryContentMeta}, instance::InstanceConfiguration, loader::Loader};
+use schema::{auxiliary::{AuxDisabledChildren, AuxiliaryContentMeta}, instance::InstanceConfiguration, loader::Loader, unique_bytes::UniqueBytes};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use thiserror::Error;
@@ -30,7 +30,7 @@ pub struct Instance {
     pub server_dat_path: Arc<Path>,
     pub saves_path: Arc<Path>,
     pub name: Ustr,
-    pub icon: Option<Arc<[u8]>>,
+    pub icon: Option<UniqueBytes>,
     pub configuration: Persistent<InstanceConfiguration>,
     pub stats: Persistent<InstanceStats>,
 
@@ -390,46 +390,53 @@ impl Instance {
         from_index: usize,
         to_index: usize,
     ) {
-        backend.server_dat_ignore.write().insert(id, 2);
         let server_dat_path = {
             let guard = backend.instance_state.read();
             let Some(instance) = guard.instances.get(id) else {
-                backend.server_dat_ignore.write().remove(&id);
                 return;
             };
             instance.server_dat_path.clone()
         };
 
-        let result = tokio::task::spawn_blocking(move || {
-            reorder_servers_in_file(&server_dat_path, from_index, to_index)
-        }).await;
+        if !server_dat_path.is_file() {
+            backend.send.send_error("server.dat is not a file");
+            return;
+        }
 
-        match result {
-            Ok(Ok(changed)) => {
-                if changed {
-                    if let Some(instance) = backend.instance_state.write().instances.get_mut(id) {
-                        if let Some(servers) = instance.servers.as_ref() {
-                            if let Some(updated) = reorder_servers_in_memory(servers, from_index, to_index) {
-                                instance.servers = Some(updated.clone());
-                                backend.send.send(MessageToFrontend::InstanceServersUpdated {
-                                    id,
-                                    servers: updated,
-                                });
-                            }
-                        }
-                    }
-                }
-            },
-            Ok(Err(err)) => {
-                backend.server_dat_ignore.write().remove(&id);
-                log::error!("Error reordering servers: {:?}", err);
-                backend.send.send_error(format!("Error reordering servers: {err}"));
-            },
+        let raw = match std::fs::read(&server_dat_path) {
+            Ok(raw) => raw,
             Err(err) => {
-                backend.server_dat_ignore.write().remove(&id);
-                log::error!("Error reordering servers: {:?}", err);
-                backend.send.send_error(format!("Error reordering servers: {err}"));
+                log::error!("Error while reading server.dat: {err:?}");
+                backend.send.send_error("Error while reading server.dat: {err}");
+                return;
             },
+        };
+        let mut nbt_data = raw.as_slice();
+        let mut result = match nbt::decode::read_named(&mut nbt_data) {
+            Ok(result) => result,
+            Err(err) => {
+                log::error!("Error while decoding server.dat: {err:?}");
+                backend.send.send_error("Error while decoding server.dat: {err}");
+                return;
+            },
+        };
+
+        let Some(mut root) = result.as_compound_mut() else {
+            backend.send.send_error("Unable to get root compound");
+            return;
+        };
+        let Some(mut servers) = root.find_list_mut("servers", nbt::TAG_COMPOUND_ID) else {
+            backend.send.send_error("Unable to get servers list");
+            return;
+        };
+
+        if servers.move_index(from_index, to_index) {
+            let bytes = nbt::encode::write_named(&result);
+            if let Err(err) = crate::write_safe(&server_dat_path, &bytes) {
+                log::error!("Error while writing server.dat: {err:?}");
+                backend.send.send_error("Error while writing server.dat: {err}");
+                return;
+            }
         }
     }
 
@@ -1115,7 +1122,7 @@ fn load_world_summary(path: &Path) -> anyhow::Result<InstanceWorldSummary> {
 
     let icon_path = path.join("icon.png");
     let icon = if icon_path.is_file() {
-        std::fs::read(icon_path).map(Arc::from).ok()
+        std::fs::read(icon_path).map(UniqueBytes::from).ok()
     } else {
         None
     };
@@ -1166,11 +1173,11 @@ fn load_servers_summary(server_dat_path: &Path, backend: &Arc<BackendState>, ver
             .map(|v| Arc::from(v.as_str()))
             .unwrap_or_else(|| Arc::from("<unnamed>"));
 
-        let mut icon: Option<Arc<[u8]>> = if let Some(status) = &status
+        let mut icon: Option<UniqueBytes> = if let Some(status) = &status
             && let Some(icon) = &status.favicon
             && let Some(base64) = icon.strip_prefix("data:image/png;base64,")
         {
-            base64::engine::general_purpose::STANDARD.decode(base64.replace('\n', "")).map(Arc::from).ok()
+            base64::engine::general_purpose::STANDARD.decode(base64.replace('\n', "")).map(UniqueBytes::from).ok()
         } else {
             None
         };
@@ -1178,7 +1185,7 @@ fn load_servers_summary(server_dat_path: &Path, backend: &Arc<BackendState>, ver
         if icon.is_none() {
             icon = server
                 .find_string("icon")
-                .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).map(Arc::from).ok());
+                .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).map(UniqueBytes::from).ok());
         }
 
         summaries.push(InstanceServerSummary {
@@ -1192,46 +1199,4 @@ fn load_servers_summary(server_dat_path: &Path, backend: &Arc<BackendState>, ver
     }
 
     Ok(summaries)
-}
-
-fn reorder_servers_in_file(server_dat_path: &Path, from_index: usize, to_index: usize) -> anyhow::Result<bool> {
-    if !server_dat_path.is_file() {
-        return Ok(false);
-    }
-
-    let raw = std::fs::read(server_dat_path)?;
-    let mut nbt_data = raw.as_slice();
-    let mut result = nbt::decode::read_named(&mut nbt_data)?;
-
-    let mut root = result.as_compound_mut().context("Unable to get root compound")?;
-    let mut servers = root
-        .find_list_mut("servers", nbt::TAG_COMPOUND_ID)
-        .context("Unable to get servers")?;
-
-    if !servers.move_index(from_index, to_index) {
-        return Ok(false);
-    }
-
-    let bytes = nbt::encode::write_named(&result);
-    let temp_path = server_dat_path.with_extension("dat.tmp");
-    std::fs::write(&temp_path, bytes)?;
-    let _ = std::fs::remove_file(server_dat_path);
-    std::fs::rename(&temp_path, server_dat_path)?;
-    Ok(true)
-}
-
-fn reorder_servers_in_memory(
-    servers: &Arc<[InstanceServerSummary]>,
-    from_index: usize,
-    to_index: usize,
-) -> Option<Arc<[InstanceServerSummary]>> {
-    if from_index >= servers.len() || to_index >= servers.len() || from_index == to_index {
-        return None;
-    }
-
-    let mut vec = servers.to_vec();
-    let entry = vec.remove(from_index);
-    let insert_at = to_index.min(vec.len());
-    vec.insert(insert_at, entry);
-    Some(vec.into())
 }

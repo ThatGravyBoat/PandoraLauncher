@@ -1,4 +1,4 @@
-use std::{ffi::OsString, sync::Arc};
+use std::ffi::OsString;
 
 use bridge::{
     handle::BackendHandle,
@@ -52,7 +52,6 @@ impl InstanceQuickplaySubpage {
             id: instance_id,
             name: instance.name.clone(),
             backend_handle: backend_handle.clone(),
-            servers_entity: instance.servers.clone(),
             servers: instance.servers.read(cx).to_vec(),
             searched: instance.servers.read(cx).to_vec(),
             search_query: String::new(),
@@ -232,7 +231,7 @@ impl ListDelegate for WorldsListDelegate {
         let summary = self.searched.get(ix.row)?;
 
         let icon = if let Some(png_icon) = summary.png_icon.as_ref() {
-            png_render_cache::render(Arc::clone(png_icon), cx)
+            png_render_cache::render(png_icon.clone(), cx)
         } else {
             gpui::img(ImageSource::Resource(Resource::Embedded("images/default_world.png".into())))
         };
@@ -290,7 +289,6 @@ pub struct ServersListDelegate {
     id: InstanceID,
     name: SharedString,
     backend_handle: BackendHandle,
-    servers_entity: Entity<Arc<[InstanceServerSummary]>>,
     servers: Vec<InstanceServerSummary>,
     searched: Vec<InstanceServerSummary>,
     search_query: String,
@@ -317,7 +315,7 @@ impl ListDelegate for ServersListDelegate {
         let can_reorder = self.can_reorder();
 
         let icon = if let Some(png_icon) = summary.png_icon.as_ref() {
-            png_render_cache::render(Arc::clone(png_icon), cx)
+            png_render_cache::render(png_icon.clone(), cx)
         } else {
             gpui::img(ImageSource::Resource(Resource::Embedded("images/default_world.png".into())))
         };
@@ -401,10 +399,11 @@ impl ListDelegate for ServersListDelegate {
             .icon(PandoraIcon::ArrowUp)
             .disabled(!can_reorder || row_index == 0)
             .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.delegate().can_reorder() || row_index == 0 {
+                let delegate = this.delegate_mut();
+                if !delegate.can_reorder() || row_index == 0 {
                     return;
                 }
-                this.delegate_mut().reorder_servers(row_index, row_index.saturating_sub(1), cx);
+                delegate.reorder_servers(row_index, row_index.saturating_sub(1), cx);
             }));
 
         let move_down = Button::new(("server-down", row_index))
@@ -413,11 +412,11 @@ impl ListDelegate for ServersListDelegate {
             .icon(PandoraIcon::ArrowDown)
             .disabled(!can_reorder || row_index + 1 >= self.searched.len())
             .on_click(cx.listener(move |this, _, _, cx| {
-                let last_index = this.delegate().searched.len().saturating_sub(1);
-                if !this.delegate().can_reorder() || row_index >= last_index {
+                let delegate = this.delegate_mut();
+                if !delegate.can_reorder() || row_index + 1 >= delegate.searched.len() {
                     return;
                 }
-                this.delegate_mut().reorder_servers(row_index, row_index + 1, cx);
+                delegate.reorder_servers(row_index, row_index + 1, cx);
             }));
 
         let item = ListItem::new(ix)
@@ -439,13 +438,14 @@ impl ListDelegate for ServersListDelegate {
                             }))
                             .px_2(),
                     )
+                    .child(icon.size_16().min_w_16().min_h_16())
+                    .child(description)
                     .child(v_flex()
                         .gap_1()
-                        .child(h_flex().gap_1().child(move_up).child(move_down))
-                        .px_1(),
-                    )
-                    .child(icon.size_16().min_w_16().min_h_16())
-                    .child(description),
+                        .child(move_up)
+                        .child(move_down)
+                        .px_2(),
+                    ),
             );
 
         Some(item)
@@ -485,20 +485,6 @@ impl ServersListDelegate {
             return;
         }
 
-        let Some(reordered) = reorder_vec(&self.servers, from_index, to_index) else {
-            return;
-        };
-
-        let reordered_arc: Arc<[InstanceServerSummary]> = reordered.clone().into();
-        self.servers = reordered;
-        self.searched = self.apply_search(&self.search_query);
-
-        let servers_entity = self.servers_entity.clone();
-        cx.update_entity(&servers_entity, |servers, cx| {
-            *servers = reordered_arc;
-            cx.notify();
-        });
-
         self.backend_handle.send(MessageToBackend::ReorderServers {
             id: self.id,
             from_index,
@@ -506,16 +492,4 @@ impl ServersListDelegate {
         });
         cx.notify();
     }
-}
-
-fn reorder_vec<T: Clone>(items: &[T], from_index: usize, to_index: usize) -> Option<Vec<T>> {
-    if from_index >= items.len() || to_index >= items.len() || from_index == to_index {
-        return None;
-    }
-
-    let mut vec = items.to_vec();
-    let entry = vec.remove(from_index);
-    let insert_at = to_index.min(vec.len());
-    vec.insert(insert_at, entry);
-    Some(vec)
 }

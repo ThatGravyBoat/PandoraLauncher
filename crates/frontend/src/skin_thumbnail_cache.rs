@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 use gpui::{App, AppContext, Context, Entity, RenderImage, Task};
 use image::{Frame, RgbaImage as SkinImage};
 use rustc_hash::FxHashMap;
-use schema::minecraft_profile::SkinVariant;
+use schema::{minecraft_profile::SkinVariant, unique_bytes::UniqueBytes};
 
 const THUMB_YAW: f64 = 22.5;
 const THUMB_PITCH: f64 = -8.0;
@@ -15,29 +15,19 @@ pub const THUMB_HEIGHT: u32 = 128;
 
 const MAX_CACHE_SIZE: usize = 256;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct SkinPtr(usize);
-
-impl SkinPtr {
-    fn from_arc(skin: &Arc<[u8]>) -> Self {
-        Self(Arc::as_ptr(skin).addr())
-    }
-}
-
 enum ThumbnailState {
     Pending,
     Ready(Arc<RenderImage>),
 }
 
 struct QueueEntry {
-    ptr: SkinPtr,
-    skin: Arc<[u8]>,
+    skin: UniqueBytes,
     variant: SkinVariant,
 }
 
 pub struct SkinThumbnailCache {
-    cache: FxHashMap<SkinPtr, ThumbnailState>,
-    insertion_order: VecDeque<SkinPtr>,
+    cache: FxHashMap<UniqueBytes, ThumbnailState>,
+    insertion_order: VecDeque<UniqueBytes>,
     queue: VecDeque<QueueEntry>,
     render_task: Option<Task<()>>,
 }
@@ -62,21 +52,18 @@ impl SkinThumbnailCache {
 
     pub fn get_or_queue(
         &mut self,
-        skin: &Arc<[u8]>,
+        skin: &UniqueBytes,
         variant: SkinVariant,
         cx: &mut Context<Self>,
     ) -> Option<Arc<RenderImage>> {
-        let ptr = SkinPtr::from_arc(skin);
-
-        match self.cache.get(&ptr) {
+        match self.cache.get(skin) {
             Some(ThumbnailState::Ready(img)) => return Some(img.clone()),
             Some(ThumbnailState::Pending) => return None,
             None => {}
         }
 
-        self.cache.insert(ptr, ThumbnailState::Pending);
+        self.cache.insert(skin.clone(), ThumbnailState::Pending);
         self.queue.push_back(QueueEntry {
-            ptr,
             skin: skin.clone(),
             variant,
         });
@@ -125,8 +112,8 @@ impl SkinThumbnailCache {
             let _ = this.update(cx, |cache, cx| {
                 if let Ok(Some(img)) = result {
                     let render_image = Arc::new(RenderImage::new([Frame::new(img)]));
-                    cache.cache.insert(entry.ptr, ThumbnailState::Ready(render_image));
-                    cache.insertion_order.push_back(entry.ptr);
+                    cache.cache.insert(entry.skin.clone(), ThumbnailState::Ready(render_image));
+                    cache.insertion_order.push_back(entry.skin.clone());
 
                     while cache.insertion_order.len() > MAX_CACHE_SIZE {
                         if let Some(oldest) = cache.insertion_order.pop_front() {
@@ -136,7 +123,7 @@ impl SkinThumbnailCache {
                         }
                     }
                 } else {
-                    cache.cache.remove(&entry.ptr);
+                    cache.cache.remove(&entry.skin);
                 }
 
                 cache.render_task = None;

@@ -73,7 +73,7 @@ impl ContentListDelegate {
 
     pub fn render_summary(&self, summary: &InstanceContentSummary, selected: bool, expanded: bool, can_expand: bool, ix: usize, cx: &mut Context<ListState<Self>>) -> ListItem {
         let icon = if let Some(png_icon) = summary.content_summary.png_icon.as_ref() {
-            png_render_cache::render(Arc::clone(png_icon), cx)
+            png_render_cache::render(png_icon.clone(), cx)
         } else {
             gpui::img(ImageSource::Resource(Resource::Embedded("images/default_mod.png".into())))
         };
@@ -357,7 +357,7 @@ impl ContentListDelegate {
     fn render_child_entry(&self, child: &ContentEntryChild, cx: &mut App) -> ListItem {
         let summary = &child.summary;
         let icon = if let Some(png_icon) = summary.png_icon.as_ref() {
-            png_render_cache::render(Arc::clone(png_icon), cx)
+            png_render_cache::render(png_icon.clone(), cx)
         } else {
             gpui::img(ImageSource::Resource(Resource::Embedded("images/default_mod.png".into())))
         };

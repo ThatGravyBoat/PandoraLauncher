@@ -9,7 +9,7 @@ use parking_lot::{RwLock, RwLockReadGuard};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rc_zip_sync::EntryHandle;
 use rustc_hash::{FxHashMap, FxHashSet};
-use schema::{content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeFile, CurseforgeModpackManifestJson}, fabric_mod::{FabricModJson, Icon, Person}, forge_mod::{JarJarMetadata, McModInfo, ModsToml}, loader::Loader, modrinth::{ModrinthFile, ModrinthSideRequirement}, mrpack::ModrinthIndexJson, resourcepack::PackMcmeta};
+use schema::{content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeFile, CurseforgeModpackManifestJson}, fabric_mod::{FabricModJson, Icon, Person}, forge_mod::{JarJarMetadata, McModInfo, ModsToml}, loader::Loader, modrinth::{ModrinthFile, ModrinthSideRequirement}, mrpack::ModrinthIndexJson, resourcepack::PackMcmeta, unique_bytes::UniqueBytes};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DeserializeAs};
 use sha1::{Digest, Sha1};
@@ -317,7 +317,7 @@ impl ModMetadataManager {
             None => None,
         };
 
-        let mut png_icon: Option<Arc<[u8]>> = None;
+        let mut png_icon: Option<UniqueBytes> = None;
         if let Some(icon) = icon && let Some(icon_file) = archive.by_name(&icon) {
             png_icon = load_icon(icon_file);
         }
@@ -355,7 +355,7 @@ impl ModMetadataManager {
 
         let name = first.display_name.clone().unwrap_or_else(|| Arc::clone(&first.mod_id));
 
-        let mut png_icon: Option<Arc<[u8]>> = None;
+        let mut png_icon: Option<UniqueBytes> = None;
         if let Some(icon) = &first.logo_file && let Some(icon_file) = archive.by_name(&icon) {
             png_icon = load_icon(icon_file);
         }
@@ -405,7 +405,7 @@ impl ModMetadataManager {
 
         drop(file);
 
-        let mut png_icon: Option<Arc<[u8]>> = None;
+        let mut png_icon: Option<UniqueBytes> = None;
         if let Some(icon) = &first.logo_file && let Some(icon_file) = archive.by_name(&icon) {
             png_icon = load_icon(icon_file);
         }
@@ -751,7 +751,7 @@ impl ModMetadataManager {
 }
 
 
-fn load_icon<R: rc_zip_sync::HasCursor>(icon_file: rc_zip_sync::EntryHandle<R>) -> Option<Arc<[u8]>> {
+fn load_icon<R: rc_zip_sync::HasCursor>(icon_file: rc_zip_sync::EntryHandle<R>) -> Option<UniqueBytes> {
     let Ok(icon_bytes) = icon_file.bytes() else {
         return None;
     };
@@ -759,7 +759,7 @@ fn load_icon<R: rc_zip_sync::HasCursor>(icon_file: rc_zip_sync::EntryHandle<R>) 
     load_icon_bytes(&icon_bytes)
 }
 
-fn load_icon_bytes(icon_bytes: &[u8]) -> Option<Arc<[u8]>> {
+fn load_icon_bytes(icon_bytes: &[u8]) -> Option<UniqueBytes> {
     let Ok(mut image) = image::load_from_memory(&icon_bytes) else {
         return None;
     };

@@ -147,7 +147,6 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
         cached_minecraft_profiles: Default::default(),
         skin_manager: Default::default(),
         server_list_pinger: Arc::new(ServerListPinger::new()),
-        server_dat_ignore: Default::default(),
     };
 
     log::debug!("Doing initial backend load");
@@ -206,7 +205,6 @@ pub struct BackendState {
     pub cached_minecraft_profiles: Arc<RwLock<FxHashMap<Uuid, CachedMinecraftProfile>>>,
     pub skin_manager: Arc<RwLock<SkinManager>>,
     pub server_list_pinger: Arc<ServerListPinger>,
-    pub server_dat_ignore: Arc<RwLock<FxHashMap<InstanceID, u8>>>,
 }
 
 pub struct CachedMinecraftProfile {
